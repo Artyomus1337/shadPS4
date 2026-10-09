@@ -82,6 +82,10 @@ public:
     u64 Flush();
     void Finish();
     void OnSubmit();
+
+    bool IsFrameTracing() const noexcept {
+        return frame_trace_state == FrameTraceState::Tracing;
+    }
     void OnFence();
 
     PipelineCache& GetPipelineCache() {
@@ -128,6 +132,11 @@ private:
 
     void ResetBindings(bool is_compute);
     void SynchronizeDma();
+
+    void UpdateFrameTrace();
+    std::string TraceBoundImages();
+    void TraceDraw(const GraphicsPipeline* pipeline, std::string_view kind);
+    void TraceDispatch(const ComputePipeline* pipeline, std::string_view kind);
 
     bool IsComputeMetaClear(const Pipeline* pipeline);
     bool IsComputeImageCopy(const Pipeline* pipeline);
@@ -177,6 +186,15 @@ private:
     bool attachment_feedback_loop{};
     bool needs_barrier{};
     bool uses_dma{};
+
+    enum class FrameTraceState : u8 {
+        Idle,
+        Armed,
+        Tracing,
+    };
+    FrameTraceState frame_trace_state{};
+    bool frame_trace_latched{};
+    u32 frame_trace_event{};
 };
 
 } // namespace Vulkan

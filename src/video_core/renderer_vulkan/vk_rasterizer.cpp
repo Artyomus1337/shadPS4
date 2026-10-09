@@ -55,6 +55,79 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
 
 Rasterizer::~Rasterizer() = default;
 
+void Rasterizer::UpdateFrameTrace() {
+    if (frame_trace_state == FrameTraceState::Tracing) {
+        LOG_INFO(Render_Vulkan, "TRACE end, {} events", frame_trace_event);
+        frame_trace_state = FrameTraceState::Idle;
+    } else if (frame_trace_state == FrameTraceState::Armed) {
+        LOG_INFO(Render_Vulkan, "TRACE begin");
+        frame_trace_state = FrameTraceState::Tracing;
+        frame_trace_event = 0;
+    }
+    const bool requested = DebugState.DumpingCurrentFrame();
+    if (requested && !frame_trace_latched && frame_trace_state == FrameTraceState::Idle) {
+        frame_trace_state = FrameTraceState::Armed;
+    }
+    frame_trace_latched = requested;
+}
+
+std::string Rasterizer::TraceBoundImages() {
+    std::string out;
+    for (const auto image_id : bound_images) {
+        if (!image_id) {
+            continue;
+        }
+        const auto& info = texture_cache.GetImage(image_id).info;
+        out +=
+            fmt::format(" {:#x}:{}x{}x{}:{}", info.guest_address, info.size.width, info.size.height,
+                        info.resources.layers, vk::to_string(info.pixel_format));
+    }
+    return out;
+}
+
+void Rasterizer::TraceDraw(const GraphicsPipeline* pipeline, std::string_view kind) {
+    const auto& regs = liverpool->regs;
+    const auto stage_hash = [&](Shader::SwStage stage) -> u64 {
+        const auto* info = pipeline->GetStages()[static_cast<u32>(stage)];
+        return info ? info->pgm_hash : 0;
+    };
+    std::string s = fmt::format("TRACE #{} {} vs={:#x} fs={:#x} prim={} n={} inst={}",
+                                frame_trace_event++, kind, stage_hash(Shader::SwStage::Vertex),
+                                stage_hash(Shader::SwStage::Fragment),
+                                magic_enum::enum_name(regs.primitive_type), regs.num_indices,
+                                regs.num_instances.NumInstances());
+    s += fmt::format(" cbmode={}", magic_enum::enum_name(regs.color_control.mode));
+    for (u32 cb = 0; cb < AmdGpu::NUM_COLOR_BUFFERS; ++cb) {
+        const auto& col_buf = regs.color_buffers[cb];
+        if (!col_buf || !regs.color_target_mask.GetMask(cb)) {
+            continue;
+        }
+        s += fmt::format(
+            " | rt{} {:#x} {}x{} {}/{} mask={:#x} blend={} fastclear={}", cb, col_buf.Address(),
+            col_buf.Pitch(), col_buf.Height(), magic_enum::enum_name(col_buf.GetDataFmt()),
+            magic_enum::enum_name(col_buf.GetNumberFmt()), regs.color_target_mask.GetMask(cb),
+            u32(regs.blend_control[cb].enable), u32(col_buf.info.fast_clear));
+    }
+    if (regs.depth_buffer.DepthValid()) {
+        s += fmt::format(
+            " | z {:#x} fmt={} test={} func={} write={} stencil={}",
+            regs.depth_buffer.DepthAddress(),
+            magic_enum::enum_name(AmdGpu::DepthBuffer::ZFormat(regs.depth_buffer.z_info.format)),
+            u32(regs.depth_control.depth_enable),
+            magic_enum::enum_name(AmdGpu::CompareFunc(regs.depth_control.depth_func)),
+            u32(regs.depth_control.depth_write_enable), u32(regs.depth_control.stencil_enable));
+    }
+    s += " | img" + TraceBoundImages();
+    LOG_INFO(Render_Vulkan, "{}", s);
+}
+
+void Rasterizer::TraceDispatch(const ComputePipeline* pipeline, std::string_view kind) {
+    const auto& cs_program = liverpool->GetCsRegs();
+    LOG_INFO(Render_Vulkan, "TRACE #{} {} cs={:#x} dim={}x{}x{} | img{}", frame_trace_event++, kind,
+             pipeline->GetStage(Shader::SwStage::Compute).pgm_hash, cs_program.dim_x,
+             cs_program.dim_y, cs_program.dim_z, TraceBoundImages());
+}
+
 bool Rasterizer::FilterDraw() {
     const auto& regs = liverpool->regs;
     if (regs.color_control.mode == AmdGpu::ColorControl::OperationMode::EliminateFastClear) {
@@ -169,6 +242,10 @@ void Rasterizer::EliminateFastClear() {
     if (!texture_cache.IsMetaCleared(col_buf.CmaskAddress(), col_buf.view.slice_start)) {
         return;
     }
+    if (IsFrameTracing()) {
+        LOG_INFO(Render_Vulkan, "TRACE #{} fastclear {:#x} words={:#x},{:#x}", frame_trace_event++,
+                 col_buf.Address(), col_buf.clear_word0, col_buf.clear_word1);
+    }
     for (u32 slice = col_buf.view.slice_start; slice <= col_buf.view.slice_max; ++slice) {
         texture_cache.TouchMeta(col_buf.CmaskAddress(), slice, false);
     }
@@ -219,6 +296,10 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     const auto& vs_info = pipeline->GetStage(Shader::SwStage::Vertex);
     const auto& fetch_shader = pipeline->GetFetchShader();
     const auto [vertex_offset, instance_offset] = GetDrawOffsets(regs, vs_info, fetch_shader);
+
+    if (IsFrameTracing()) {
+        TraceDraw(pipeline, is_indexed ? "drawidx" : "draw");
+    }
 
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline->Handle());
@@ -289,6 +370,14 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     UpdateDynamicState(pipeline, is_indexed);
     scheduler.BeginRendering(state);
 
+    if (IsFrameTracing()) {
+        TraceDraw(pipeline,
+                  fmt::format("drawindirect{} args={:#x} max={} count={:#x} gpu={}",
+                              is_indexed ? "idx" : "", arg_address + offset, max_count,
+                              count_address,
+                              buffer_cache.IsRegionGpuModified(arg_address + offset, size)));
+    }
+
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline->Handle());
 
@@ -330,6 +419,9 @@ void Rasterizer::DispatchDirect() {
 
     const auto& cs = pipeline->GetStage(Shader::SwStage::Compute);
     if (ExecuteShaderHLE(cs, liverpool->regs, cs_program, *this)) {
+        if (IsFrameTracing()) {
+            TraceDispatch(pipeline, "dispatch-hle");
+        }
         return;
     }
 
@@ -344,6 +436,10 @@ void Rasterizer::DispatchDirect() {
 
     scheduler.EndRendering();
     pipeline->BindResources(set_writes, push_data);
+
+    if (IsFrameTracing()) {
+        TraceDispatch(pipeline, "dispatch");
+    }
 
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->Handle());
@@ -380,6 +476,10 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
     scheduler.EndRendering();
     pipeline->BindResources(set_writes, push_data);
 
+    if (IsFrameTracing()) {
+        TraceDispatch(pipeline, "dispatchindirect");
+    }
+
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->Handle());
     cmdbuf.dispatchIndirect(buffer->Handle(), base);
@@ -400,6 +500,7 @@ void Rasterizer::Finish() {
 }
 
 void Rasterizer::OnSubmit() {
+    UpdateFrameTrace();
     buffer_cache.TickFrame();
     texture_cache.ProcessDownloadImages();
     texture_cache.RunGarbageCollector();
