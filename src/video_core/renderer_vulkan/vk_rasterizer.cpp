@@ -435,6 +435,7 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
 
     if (uses_dma) {
         buffer_cache.SynchronizeDmaBuffers();
+        needs_barrier = true;
     }
 
     return true;
