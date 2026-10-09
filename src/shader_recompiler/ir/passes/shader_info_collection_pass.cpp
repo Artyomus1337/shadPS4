@@ -159,6 +159,10 @@ void Visit(Info& info, const IR::Inst& inst) {
             info.uses_dma = true;
         }
         break;
+    case IR::Opcode::LoadGlobalU32:
+        info.readconst_types |= Info::ReadConstType::Dynamic;
+        info.uses_dma = true;
+        break;
     case IR::Opcode::PackUfloat10_11_11:
         info.uses_pack_10_11_11 = true;
         break;

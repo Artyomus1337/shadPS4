@@ -209,11 +209,32 @@ void Translator::BUFFER_LOAD(u32 num_dwords, bool is_inst_typed, bool is_buffer_
     const auto& mubuf = inst.control.mubuf;
     const IR::VectorReg vaddr{inst.src[0].code};
     const IR::ScalarReg sharp{inst.src[2].code * 4};
+    const IR::U32 soffset{GetSrc(inst.src[3])};
+    const IR::VectorReg dst_reg{inst.src[1].code};
+
+    if (mubuf.addr64) {
+        if (!is_inst_typed && !is_buffer_typed && scalar_width == 32) {
+            const IR::U64 vgpr_address = ir.PackUint2x32(
+                ir.CompositeConstruct(ir.GetVectorReg(vaddr), ir.GetVectorReg(vaddr + 1)));
+            const IR::U64 sharp_address = ir.PackUint2x32(ir.CompositeConstruct(
+                ir.GetScalarReg(sharp),
+                ir.BitwiseAnd(ir.GetScalarReg(sharp + 1), ir.Imm32(0xFFFFU))));
+            const IR::U32 offset{ir.IAdd(soffset, ir.Imm32(static_cast<u32>(mubuf.offset)))};
+            const IR::U64 address{
+                ir.IAdd(IR::U64{ir.IAdd(vgpr_address, sharp_address)}, ir.UConvert(64, offset))};
+            const IR::Value base =
+                ir.UnpackUint2x32(IR::U64{ir.BitwiseAnd(address, ir.Imm64(~u64{3}))});
+            for (u32 i = 0; i < num_dwords; i++) {
+                ir.SetVectorReg(dst_reg + i, ir.LoadGlobalU32(base, ir.Imm32(i)));
+            }
+            return;
+        }
+        LOG_ERROR(Render_Recompiler, "Unsupported ADDR64 buffer load at pc {:#x}", pc);
+    }
 
     const IR::U32 index = mubuf.idxen ? ir.GetVectorReg(vaddr) : ir.Imm32(0);
     const IR::VectorReg voffset_vgpr = mubuf.idxen ? vaddr + 1 : vaddr;
     const IR::U32 voffset = mubuf.offen ? ir.GetVectorReg(voffset_vgpr) : ir.Imm32(0);
-    const IR::U32 soffset{GetSrc(inst.src[3])};
     const IR::Value address = ir.CompositeConstruct(index, voffset, soffset);
 
     IR::BufferInstInfo buffer_info{};
@@ -235,7 +256,6 @@ void Translator::BUFFER_LOAD(u32 num_dwords, bool is_inst_typed, bool is_buffer_
     const IR::Value handle =
         ir.CompositeConstruct(ir.GetScalarReg(sharp), ir.GetScalarReg(sharp + 1),
                               ir.GetScalarReg(sharp + 2), ir.GetScalarReg(sharp + 3));
-    const IR::VectorReg dst_reg{inst.src[1].code};
     if (buffer_info.typed) {
         const IR::Value value = ir.LoadBufferFormat(handle, address, buffer_info);
         for (u32 i = 0; i < num_dwords; i++) {
@@ -275,6 +295,9 @@ void Translator::BUFFER_LOAD(u32 num_dwords, bool is_inst_typed, bool is_buffer_
 void Translator::BUFFER_STORE(u32 num_dwords, bool is_inst_typed, bool is_buffer_typed,
                               const GcnInst& inst, u32 scalar_width) {
     const auto& mubuf = inst.control.mubuf;
+    if (mubuf.addr64) {
+        LOG_ERROR(Render_Recompiler, "Unsupported ADDR64 buffer store at pc {:#x}", pc);
+    }
     const IR::VectorReg vaddr{inst.src[0].code};
     const IR::ScalarReg sharp{inst.src[2].code * 4};
 
@@ -343,6 +366,9 @@ void Translator::BUFFER_STORE(u32 num_dwords, bool is_inst_typed, bool is_buffer
 template <typename T>
 void Translator::BUFFER_ATOMIC(AtomicOp op, const GcnInst& inst) {
     const auto& mubuf = inst.control.mubuf;
+    if (mubuf.addr64) {
+        LOG_ERROR(Render_Recompiler, "Unsupported ADDR64 buffer atomic at pc {:#x}", pc);
+    }
     const IR::VectorReg vaddr{inst.src[0].code};
     const IR::VectorReg vdata{inst.src[1].code};
     const IR::ScalarReg srsrc{inst.src[2].code * 4};

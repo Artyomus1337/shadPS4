@@ -115,6 +115,7 @@ public:
 
     [[nodiscard]] U32 ReadConst(const Value& base, const U32& offset);
     [[nodiscard]] U32 ReadConstBuffer(const Value& handle, const U32& index, BufferInstInfo info);
+    [[nodiscard]] U32 LoadGlobalU32(const Value& base, const U32& offset);
 
     [[nodiscard]] U8 LoadBufferU8(const Value& handle, const Value& address, BufferInstInfo info);
     [[nodiscard]] U16 LoadBufferU16(const Value& handle, const Value& address, BufferInstInfo info);

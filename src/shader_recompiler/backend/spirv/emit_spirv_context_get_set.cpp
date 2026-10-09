@@ -60,6 +60,10 @@ Id EmitReadConst(EmitContext& ctx, IR::Inst* inst, Id addr, Id offset) {
     }
 }
 
+Id EmitLoadGlobalU32(EmitContext& ctx, Id base, Id offset) {
+    return ctx.OpFunctionCall(ctx.U32[1], ctx.read_const_dynamic, base, offset);
+}
+
 Id EmitReadConstBuffer(EmitContext& ctx, u32 handle, Id index) {
     const auto& buffer = ctx.buffers[handle];
     if (const Id offset = buffer.Offset(PointerSize::B32); Sirit::ValidId(offset)) {
