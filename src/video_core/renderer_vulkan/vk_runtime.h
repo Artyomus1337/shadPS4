@@ -74,6 +74,10 @@ public:
     bool IsBufferAccessed(const VideoCore::Buffer* handle, u64 offset, u64 size,
                           bool check_read_access = false);
 
+    bool HasPendingWrites() const noexcept {
+        return memory_barrier.srcAccessMask != vk::AccessFlagBits2::eNone;
+    }
+
     void FlushBarriers();
 
 private:

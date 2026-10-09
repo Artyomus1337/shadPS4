@@ -127,6 +127,7 @@ private:
     void BindIndexBuffer(u32 index_offset = 0, bool is_indirect = false);
 
     void ResetBindings(bool is_compute);
+    void SynchronizeDma();
 
     bool IsComputeMetaClear(const Pipeline* pipeline);
     bool IsComputeImageCopy(const Pipeline* pipeline);
@@ -175,6 +176,7 @@ private:
 
     bool attachment_feedback_loop{};
     bool needs_barrier{};
+    bool uses_dma{};
 };
 
 } // namespace Vulkan

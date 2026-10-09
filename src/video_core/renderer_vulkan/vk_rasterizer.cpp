@@ -207,6 +207,7 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
         BindIndexBuffer(index_offset);
     }
 
+    SynchronizeDma();
     if (needs_barrier) {
         runtime.FlushBarriers();
     }
@@ -279,6 +280,7 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
                                    vk::AccessFlagBits2::eIndirectCommandRead);
     }
 
+    SynchronizeDma();
     if (needs_barrier) {
         runtime.FlushBarriers();
     }
@@ -335,6 +337,7 @@ void Rasterizer::DispatchDirect() {
         return;
     }
 
+    SynchronizeDma();
     if (needs_barrier) {
         runtime.FlushBarriers();
     }
@@ -369,6 +372,7 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
     needs_barrier |= runtime.IsBufferAccessed(buffer, base, size);
     bound_buffers.emplace_back(buffer, base, size, vk::AccessFlagBits2::eIndirectCommandRead);
 
+    SynchronizeDma();
     if (needs_barrier) {
         runtime.FlushBarriers();
     }
@@ -407,6 +411,7 @@ void Rasterizer::OnFence() {
 }
 
 bool Rasterizer::BindResources(const Pipeline* pipeline) {
+    uses_dma = false;
     if (IsComputeImageCopy(pipeline) || IsComputeMetaClear(pipeline) ||
         IsComputeImageClear(pipeline)) {
         return false;
@@ -416,8 +421,6 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
     set_writes.clear();
     buffer_infos.clear();
     image_infos.clear();
-
-    bool uses_dma = false;
 
     // Bind resource buffers and textures.
     Shader::Backend::Bindings binding{};
@@ -433,12 +436,15 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
         uses_dma |= stage->uses_dma;
     }
 
-    if (uses_dma) {
-        buffer_cache.SynchronizeDmaBuffers();
-        needs_barrier = true;
-    }
-
     return true;
+}
+
+void Rasterizer::SynchronizeDma() {
+    if (!uses_dma) {
+        return;
+    }
+    buffer_cache.SynchronizeDmaBuffers();
+    needs_barrier |= runtime.HasPendingWrites();
 }
 
 void Rasterizer::BindVertexBuffers(const GraphicsPipeline* pipeline) {
