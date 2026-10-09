@@ -673,6 +673,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
         LOG_INFO(Render_Vulkan, "TRACE flip {:#x} {}x{} {}", cpu_address, info.size.width,
                  info.size.height, vk::to_string(info.pixel_format));
     }
+    rasterizer->OnFlip();
 
     Frame* frame = GetRenderFrame();
 

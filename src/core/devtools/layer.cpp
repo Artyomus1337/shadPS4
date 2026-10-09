@@ -406,6 +406,11 @@ void L::Draw() {
         visibility_toggled = true;
     }
 
+    if (IsKeyPressed(ImGuiKey_F8, false) && io.KeyCtrl && io.KeyAlt) {
+        DebugState.draw_trace_requested = true;
+        DebugState.ShowDebugMessage("Draw trace requested");
+    }
+
     if (IsKeyPressed(ImGuiKey_F9, false)) {
         if (io.KeyCtrl && io.KeyAlt) {
             if (!DebugState.ShouldPauseInSubmit()) {

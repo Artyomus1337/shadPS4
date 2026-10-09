@@ -163,6 +163,8 @@ class DebugStateImpl {
     std::vector<ShaderDump> shader_dump_list{};
 
 public:
+    std::atomic_bool draw_trace_requested = false;
+
     float Framerate = 1.0f / 60.0f;
     float FrameDeltaTime;
 

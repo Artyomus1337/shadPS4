@@ -55,7 +55,7 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
 
 Rasterizer::~Rasterizer() = default;
 
-void Rasterizer::UpdateFrameTrace() {
+void Rasterizer::OnFlip() {
     if (frame_trace_state == FrameTraceState::Tracing) {
         LOG_INFO(Render_Vulkan, "TRACE end, {} events", frame_trace_event);
         frame_trace_state = FrameTraceState::Idle;
@@ -63,12 +63,9 @@ void Rasterizer::UpdateFrameTrace() {
         LOG_INFO(Render_Vulkan, "TRACE begin");
         frame_trace_state = FrameTraceState::Tracing;
         frame_trace_event = 0;
-    }
-    const bool requested = DebugState.DumpingCurrentFrame();
-    if (requested && !frame_trace_latched && frame_trace_state == FrameTraceState::Idle) {
+    } else if (DebugState.draw_trace_requested.exchange(false)) {
         frame_trace_state = FrameTraceState::Armed;
     }
-    frame_trace_latched = requested;
 }
 
 std::string Rasterizer::TraceBoundImages() {
@@ -500,7 +497,6 @@ void Rasterizer::Finish() {
 }
 
 void Rasterizer::OnSubmit() {
-    UpdateFrameTrace();
     buffer_cache.TickFrame();
     texture_cache.ProcessDownloadImages();
     texture_cache.RunGarbageCollector();

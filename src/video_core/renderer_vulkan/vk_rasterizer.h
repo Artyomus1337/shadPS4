@@ -82,6 +82,7 @@ public:
     u64 Flush();
     void Finish();
     void OnSubmit();
+    void OnFlip();
 
     bool IsFrameTracing() const noexcept {
         return frame_trace_state == FrameTraceState::Tracing;
@@ -133,7 +134,6 @@ private:
     void ResetBindings(bool is_compute);
     void SynchronizeDma();
 
-    void UpdateFrameTrace();
     std::string TraceBoundImages();
     void TraceDraw(const GraphicsPipeline* pipeline, std::string_view kind);
     void TraceDispatch(const ComputePipeline* pipeline, std::string_view kind);
@@ -193,7 +193,6 @@ private:
         Tracing,
     };
     FrameTraceState frame_trace_state{};
-    bool frame_trace_latched{};
     u32 frame_trace_event{};
 };
 
