@@ -877,6 +877,7 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
                 const u64 offset =
                     vk_buffer.Copy(stage.flattened_ud_buf.data(), ubo_size, alignment);
                 buffer_infos.emplace_back(vk_buffer.Handle(), offset, ubo_size);
+                PatchFlatbuf(stage, offset);
             } else if (desc.buffer_type == Shader::BufferType::ClipPlanes) {
                 // Permutations compiled without enabled planes never read the buffer, so the
                 // declared binding is satisfied with a null descriptor instead of a copy.
@@ -950,6 +951,21 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
         set_write.descriptorType = vk::DescriptorType::eStorageBuffer;
         set_write.pBufferInfo = &buffer_infos.back();
         ++binding.buffer;
+    }
+}
+
+void Rasterizer::PatchFlatbuf(const Shader::Info& stage, u64 flatbuf_offset) {
+    auto& vk_buffer = buffer_cache.GetStreamBuffer();
+    for (const auto& patch : stage.flatbuf_patches) {
+        const u32 size = patch.num_dwords * sizeof(u32);
+        const auto [buffer, offset] = buffer_cache.ObtainBuffer(patch.address, size, false);
+        const vk::BufferCopy copy = {
+            .srcOffset = offset,
+            .dstOffset = flatbuf_offset + patch.dst_off_dw * sizeof(u32),
+            .size = size,
+        };
+        runtime.CopyBuffer(buffer, &vk_buffer, std::span{&copy, 1});
+        needs_barrier = true;
     }
 }
 

@@ -25,12 +25,19 @@ struct PersistentSrtInfo {
         u32 num_dwords;
     };
 
-    // Guest memory read by the walker through a pointer with an immediate offset.
+    // Pointer the walker loads from an immediate offset.
     struct PointerRead {
         static constexpr u32 UserData = ~0U;
 
         u32 parent;
         u32 src_off_dw;
+    };
+
+    // Dwords the walker copies from a pointer to consecutive flattened buffer slots.
+    struct FlatCopy {
+        u32 read;
+        u32 src_off_dw;
+        u32 dst_off_dw;
         u32 num_dwords;
     };
 
@@ -38,6 +45,9 @@ struct PersistentSrtInfo {
     size_t walker_func_size{};
     u32 flattened_bufsize_dw = 16; // NumUserDataRegs
     std::vector<PointerRead> pointer_reads;
+    std::vector<FlatCopy> flat_copies;
+    // Flattened buffer slots the walker reads to compute dynamic offsets.
+    std::vector<u32> offset_slots;
 
     void Serialize(Serialization::Archive& ar) const;
     bool Deserialize(Serialization::Archive& ar);

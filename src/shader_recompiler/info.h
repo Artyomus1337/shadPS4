@@ -100,8 +100,15 @@ struct Info : InfoPersistent {
         Qualifier auxiliary;
     };
 
+    struct FlatbufPatch {
+        VAddr address;
+        u32 dst_off_dw;
+        u32 num_dwords;
+    };
+
     std::span<const u32> user_data;
     std::vector<u32> flattened_ud_buf;
+    std::vector<FlatbufPatch> flatbuf_patches;
     PersistentSrtInfo srt_info;
 
     AttributeFlags loads{};

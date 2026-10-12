@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <ranges>
 
 #include "common/hash.h"
@@ -681,7 +682,7 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
     auto& info = program->info;
     info.pgm_base = params.Base(); // Needs to be actualized for inline cbuffer address fixup
     info.user_data = params.user_data;
-    DownloadSrtMemory(info);
+    SynchronizeSrtMemory(info);
     info.RefreshFlatBuf();
     auto spec = Shader::StageSpecialization(info, runtime_info, profile, binding);
 
@@ -709,21 +710,66 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
     return std::make_tuple(&program->info, module, perm_hash);
 }
 
-void PipelineCache::DownloadSrtMemory(const Shader::Info& info) {
+static bool IsFlatbufReadByCpu(const Shader::Info& info, u32 begin, u32 end) {
+    const auto in_range = [&](u32 slot) { return slot >= begin && slot < end; };
+    const auto fetch_in_range = [&](const auto& fetch) {
+        using Summary = typename std::decay_t<decltype(fetch)>::Summary;
+        for (u32 i = 0; i < fetch.N; ++i) {
+            if (fetch.summary == Summary::SingleLoad && in_range(fetch.offsets[0] + i)) {
+                return true;
+            }
+            if (fetch.summary == Summary::MultiLoad && ((fetch.load_mask >> i) & 1) &&
+                in_range(fetch.offsets[i])) {
+                return true;
+            }
+        }
+        return false;
+    };
+    return std::ranges::any_of(info.srt_info.offset_slots, in_range) ||
+           std::ranges::any_of(
+               info.buffers, [&](const auto& desc) { return fetch_in_range(desc.sharp_fetch); }) ||
+           std::ranges::any_of(
+               info.images, [&](const auto& desc) { return fetch_in_range(desc.sharp_fetch); }) ||
+           std::ranges::any_of(info.samplers,
+                               [&](const auto& desc) {
+                                   return fetch_in_range(desc.sharp_fetch) ||
+                                          in_range(desc.post_op_tsharp_dw3_off);
+                               }) ||
+           std::ranges::any_of(info.fmasks, [&](const auto& desc) {
+               return desc.sharp_idx < end && desc.sharp_idx + 8 > begin;
+           });
+}
+
+void PipelineCache::SynchronizeSrtMemory(Shader::Info& info) {
     using PointerRead = Shader::PersistentSrtInfo::PointerRead;
-    const auto& reads = info.srt_info.pointer_reads;
-    boost::container::small_vector<VAddr, 16> bases(reads.size());
-    for (size_t i = 0; i < reads.size(); ++i) {
-        const auto& read = reads[i];
+    const auto& srt = info.srt_info;
+    info.flatbuf_patches.clear();
+    boost::container::small_vector<VAddr, 16> bases(srt.pointer_reads.size());
+    for (size_t i = 0; i < srt.pointer_reads.size(); ++i) {
+        const auto& read = srt.pointer_reads[i];
         VAddr base{};
         if (read.parent == PointerRead::UserData) {
             std::memcpy(&base, &info.user_data[read.src_off_dw], sizeof(base));
         } else if (const VAddr src = bases[read.parent] + read.src_off_dw * sizeof(u32);
                    memory->IsValidGpuMapping(src, sizeof(base))) {
+            buffer_cache.DownloadGpuModifiedMemory(src, sizeof(base));
             memory->CopySparseMemory(src, reinterpret_cast<u8*>(&base), sizeof(base));
         }
         bases[i] = base & 0xFFFFFFFFFFFFULL;
-        buffer_cache.DownloadGpuModifiedMemory(bases[i], read.num_dwords * sizeof(u32));
+    }
+    for (const auto& copy : srt.flat_copies) {
+        const VAddr address = bases[copy.read] + copy.src_off_dw * sizeof(u32);
+        const u64 size = copy.num_dwords * sizeof(u32);
+        if (!memory->IsValidGpuMapping(address, size) ||
+            !buffer_cache.IsRegionGpuModified(address, size) ||
+            buffer_cache.IsRegionCpuModified(address, size)) {
+            continue;
+        }
+        if (IsFlatbufReadByCpu(info, copy.dst_off_dw, copy.dst_off_dw + copy.num_dwords)) {
+            buffer_cache.DownloadGpuModifiedMemory(address, size);
+        } else {
+            info.flatbuf_patches.push_back({address, copy.dst_off_dw, copy.num_dwords});
+        }
     }
 }
 

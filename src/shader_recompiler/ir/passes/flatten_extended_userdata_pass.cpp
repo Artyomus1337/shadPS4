@@ -172,6 +172,8 @@ struct PassInfo {
     u16 dst_off_dw;
 
     std::vector<PersistentSrtInfo::PointerRead> pointer_reads;
+    std::vector<PersistentSrtInfo::FlatCopy> flat_copies;
+    std::vector<u32> offset_slots;
 
     PtrUserList* GetUsesAsPointer(IR::Inst* inst) {
         auto it = pointer_uses.find(inst);
@@ -524,6 +526,7 @@ static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& p
     case IR::Opcode::ReadConstBuffer:
         if (u16 offset = GetFlatbufOffset(pass_info.DeduplicateInstruction(inst)); offset != 0) {
             c.mov(reg, ptr[rsi + (offset << 2)]);
+            pass_info.offset_slots.push_back(offset);
             return true;
         }
         return false;
@@ -613,7 +616,7 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
     std::optional<u32> index;
     if (parent && off_dw.IsImmediate()) {
         index = static_cast<u32>(pass_info.pointer_reads.size());
-        pass_info.pointer_reads.push_back({*parent, off_dw.U32(), 0});
+        pass_info.pointer_reads.push_back({*parent, off_dw.U32()});
     }
 
     // First copy all the src data from this tree level
@@ -625,9 +628,15 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
         if (src_off_dw.IsImmediate()) {
             c.mov(r10d, ptr[rdi + (src_off_dw.U32() << 2)]);
             if (index) {
-                const u32 end_dw = src_off_dw.U32() + (pass_info.GetUsesAsPointer(use) ? 2 : 1);
-                auto& read = pass_info.pointer_reads[*index];
-                read.num_dwords = std::max(read.num_dwords, end_dw);
+                auto& copies = pass_info.flat_copies;
+                const u32 src = src_off_dw.U32();
+                if (!copies.empty() && copies.back().read == *index &&
+                    copies.back().src_off_dw + copies.back().num_dwords == src &&
+                    copies.back().dst_off_dw + copies.back().num_dwords == pass_info.dst_off_dw) {
+                    ++copies.back().num_dwords;
+                } else {
+                    copies.push_back({*index, src, pass_info.dst_off_dw, 1});
+                }
             }
         } else {
             if (!ComputeOffset(c, r10d, pass_info, src_off_dw)) {
@@ -692,6 +701,8 @@ static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
 
     info.srt_info.flattened_bufsize_dw = pass_info.dst_off_dw;
     info.srt_info.pointer_reads = std::move(pass_info.pointer_reads);
+    info.srt_info.flat_copies = std::move(pass_info.flat_copies);
+    info.srt_info.offset_slots = std::move(pass_info.offset_slots);
 }
 
 static bool IsReadConstSource(const IR::Value base) {
