@@ -723,15 +723,7 @@ void PipelineCache::DownloadSrtMemory(const Shader::Info& info) {
             memory->CopySparseMemory(src, reinterpret_cast<u8*>(&base), sizeof(base));
         }
         bases[i] = base & 0xFFFFFFFFFFFFULL;
-        const u64 size = read.num_dwords * sizeof(u32);
-        const bool gpu_modified = trace_srt && memory->IsValidGpuMapping(bases[i], size) &&
-                                  buffer_cache.IsRegionGpuModified(bases[i], size);
-        const bool cpu_modified = gpu_modified && buffer_cache.IsRegionCpuModified(bases[i], size);
-        const bool downloaded = buffer_cache.DownloadGpuModifiedMemory(bases[i], size);
-        if (gpu_modified) {
-            LOG_INFO(Render_Vulkan, "TRACE srt shader={:#x} addr={:#x} size={} cpu={} dl={}",
-                     info.pgm_hash, bases[i], size, cpu_modified, downloaded);
-        }
+        buffer_cache.DownloadGpuModifiedMemory(bases[i], read.num_dwords * sizeof(u32));
     }
 }
 

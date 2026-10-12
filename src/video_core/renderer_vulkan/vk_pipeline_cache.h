@@ -108,8 +108,6 @@ public:
         return profile;
     }
 
-    bool trace_srt{};
-
 private:
     bool RefreshGraphicsKey();
     bool RefreshGraphicsStages();

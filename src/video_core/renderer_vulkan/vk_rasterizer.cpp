@@ -66,22 +66,6 @@ void Rasterizer::OnFlip() {
     } else if (DebugState.draw_trace_requested.exchange(false)) {
         frame_trace_state = FrameTraceState::Armed;
     }
-    pipeline_cache.trace_srt = IsFrameTracing();
-}
-
-std::string Rasterizer::TraceBuffers(const Shader::Info& info, bool written_only) {
-    std::string out;
-    for (const auto& desc : info.buffers) {
-        if (desc.IsSpecial() || (written_only && !desc.is_written)) {
-            continue;
-        }
-        const auto vsharp = desc.GetSharp(info);
-        const bool gpu_modified = memory->IsValidGpuMapping(vsharp.base_address, 1) &&
-                                  buffer_cache.IsRegionGpuModified(vsharp.base_address, 1);
-        out += fmt::format(" {}{:#x}:{}{}", desc.is_written ? "w" : "r", vsharp.base_address,
-                           vsharp.GetSize(), gpu_modified ? "g" : "");
-    }
-    return out;
 }
 
 std::string Rasterizer::TraceBoundImages() {
@@ -131,21 +115,14 @@ void Rasterizer::TraceDraw(const GraphicsPipeline* pipeline, std::string_view ki
             u32(regs.depth_control.depth_write_enable), u32(regs.depth_control.stencil_enable));
     }
     s += " | img" + TraceBoundImages();
-    s += " | wbuf";
-    for (const auto* stage : pipeline->GetStages()) {
-        if (stage) {
-            s += TraceBuffers(*stage, true);
-        }
-    }
     LOG_INFO(Render_Vulkan, "{}", s);
 }
 
 void Rasterizer::TraceDispatch(const ComputePipeline* pipeline, std::string_view kind) {
     const auto& cs_program = liverpool->GetCsRegs();
-    const auto& info = pipeline->GetStage(Shader::SwStage::Compute);
-    LOG_INFO(Render_Vulkan, "TRACE #{} {} cs={:#x} dim={}x{}x{} | img{} | buf{}",
-             frame_trace_event++, kind, info.pgm_hash, cs_program.dim_x, cs_program.dim_y,
-             cs_program.dim_z, TraceBoundImages(), TraceBuffers(info, false));
+    LOG_INFO(Render_Vulkan, "TRACE #{} {} cs={:#x} dim={}x{}x{} | img{}", frame_trace_event++, kind,
+             pipeline->GetStage(Shader::SwStage::Compute).pgm_hash, cs_program.dim_x,
+             cs_program.dim_y, cs_program.dim_z, TraceBoundImages());
 }
 
 bool Rasterizer::FilterDraw() {
