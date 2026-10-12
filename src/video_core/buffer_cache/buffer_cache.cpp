@@ -225,11 +225,29 @@ bool BufferCache::IsRegionGpuModified(VAddr addr, size_t size) {
 
 void BufferCache::SynchronizeDmaBuffers() {
     fault_process_pending = true;
+    const u64 page_shift = ARENA_PAGE_BITS - block_shift;
+    const auto synchronize = [&](u64 start, u64 end) {
+        SynchronizeMemory(address_space[start >> page_shift], start << block_shift,
+                          (end - start) << block_shift, false, false);
+    };
+    // Resident ranges are bound piecemeal, so merge adjacent ones of the same arena.
+    u64 start{};
+    u64 end{};
     for (const auto& range : resident_ranges) {
-        const u64 page = range.start >> (ARENA_PAGE_BITS - block_shift);
-        const VAddr device_addr = range.start << block_shift;
-        const u64 size = (range.end - range.start) << block_shift;
-        SynchronizeMemory(address_space[page], device_addr, size, false, false);
+        if (range.start == end &&
+            address_space[range.start >> page_shift] == address_space[start >> page_shift] &&
+            ((range.end - start) << block_shift) <= std::numeric_limits<u32>::max()) {
+            end = range.end;
+            continue;
+        }
+        if (start != end) {
+            synchronize(start, end);
+        }
+        start = range.start;
+        end = range.end;
+    }
+    if (start != end) {
+        synchronize(start, end);
     }
 }
 
