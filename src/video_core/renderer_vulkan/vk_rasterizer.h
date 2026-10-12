@@ -136,6 +136,7 @@ private:
     void SynchronizeDma();
 
     std::string TraceBoundImages();
+    std::string TraceBuffers(const Shader::Info& info, bool written_only);
     void TraceDraw(const GraphicsPipeline* pipeline, std::string_view kind);
     void TraceDispatch(const ComputePipeline* pipeline, std::string_view kind);
 
