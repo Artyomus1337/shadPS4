@@ -133,6 +133,17 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
     }
 }
 
+bool BufferCache::DownloadGpuModifiedMemory(VAddr device_addr, u64 size) {
+    if (!memory->IsValidGpuMapping(device_addr, size) || !IsRegionGpuModified(device_addr, size) ||
+        IsRegionCpuModified(device_addr, size)) {
+        return false;
+    }
+    const u64 first_block = device_addr >> block_shift;
+    const u64 last_block = (device_addr + size - 1) >> block_shift;
+    DownloadMemory(GetArena(first_block, last_block), device_addr, size);
+    return true;
+}
+
 void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 size) {
     boost::container::small_vector<vk::BufferCopy, 1> copies;
     u64 total_size_bytes = 0;

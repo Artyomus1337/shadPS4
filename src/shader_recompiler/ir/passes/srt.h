@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <vector>
 #include <boost/container/set.hpp>
 #include <boost/container/small_vector.hpp>
 #include "common/types.h"
@@ -24,9 +25,19 @@ struct PersistentSrtInfo {
         u32 num_dwords;
     };
 
+    // Guest memory read by the walker through a pointer with an immediate offset.
+    struct PointerRead {
+        static constexpr u32 UserData = ~0U;
+
+        u32 parent;
+        u32 src_off_dw;
+        u32 num_dwords;
+    };
+
     PFN_SrtWalker walker_func{};
     size_t walker_func_size{};
     u32 flattened_bufsize_dw = 16; // NumUserDataRegs
+    std::vector<PointerRead> pointer_reads;
 
     void Serialize(Serialization::Archive& ar) const;
     bool Deserialize(Serialization::Archive& ar);

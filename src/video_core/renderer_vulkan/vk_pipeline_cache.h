@@ -24,12 +24,20 @@ namespace AmdGpu {
 class Liverpool;
 }
 
+namespace Core {
+class MemoryManager;
+}
+
 namespace Serialization {
 struct Archive;
 }
 
 namespace Shader {
 struct Info;
+}
+
+namespace VideoCore {
+class BufferCache;
 }
 
 namespace Vulkan {
@@ -72,7 +80,7 @@ struct DrawIndirectParams {
 class PipelineCache {
 public:
     explicit PipelineCache(const Instance& instance, Scheduler& scheduler,
-                           AmdGpu::Liverpool* liverpool, u32 sparse_page_shift);
+                           AmdGpu::Liverpool* liverpool, VideoCore::BufferCache& buffer_cache);
     ~PipelineCache();
 
     void WarmUp();
@@ -113,6 +121,7 @@ private:
                                    const std::span<const u32>& code, size_t perm_idx,
                                    Shader::Backend::Bindings& binding);
     const Shader::RuntimeInfo& BuildRuntimeInfo(Shader::HwStage stage, Shader::SwStage l_stage);
+    void DownloadSrtMemory(const Shader::Info& info);
 
     [[nodiscard]] bool IsPipelineCacheDirty() const {
         return num_new_pipelines > 0;
@@ -122,6 +131,8 @@ private:
     const Instance& instance;
     Scheduler& scheduler;
     AmdGpu::Liverpool* liverpool;
+    VideoCore::BufferCache& buffer_cache;
+    Core::MemoryManager* memory;
     DescriptorHeap desc_heap;
     vk::UniquePipelineCache pipeline_cache;
     vk::UniquePipelineLayout pipeline_layout;

@@ -85,6 +85,9 @@ public:
     /// Flushes any GPU modified buffer in the logical page range back to CPU memory.
     void ReadMemory(VAddr device_addr, u64 size, bool is_write = false, bool assume_locks = false);
 
+    /// Downloads GPU modified memory in the region unless the CPU has modified it since.
+    bool DownloadGpuModifiedMemory(VAddr device_addr, u64 size);
+
     /// Finds a buffer for the specified region.
     [[nodiscard]] std::pair<const Buffer*, u64> ObtainBuffer(VAddr device_addr, u32 size,
                                                              bool is_written,

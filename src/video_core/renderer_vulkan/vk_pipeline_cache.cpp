@@ -8,11 +8,13 @@
 #include "common/path_util.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
+#include "core/memory.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/recompiler.h"
 #include "shader_recompiler/runtime_info.h"
 #include "video_core/amdgpu/liverpool.h"
+#include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/cache_storage.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -269,8 +271,9 @@ const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(HwStage stage, SwStag
 }
 
 PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
-                             AmdGpu::Liverpool* liverpool_, u32 sparse_page_shift)
+                             AmdGpu::Liverpool* liverpool_, VideoCore::BufferCache& buffer_cache_)
     : instance{instance_}, scheduler{scheduler_}, liverpool{liverpool_},
+      buffer_cache{buffer_cache_}, memory{Core::Memory::Instance()},
       desc_heap{instance, scheduler.GetWorkSemaphore(), DescriptorHeapSizes} {
     const auto& vk12_props = instance.GetVk12Properties();
     profile = Shader::Profile{
@@ -279,7 +282,7 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
         .max_shared_memory_size = instance.MaxComputeSharedMemorySize(),
         .supported_spirv = SpirvVersion1_6,
         .subgroup_size = instance.SubgroupSize(),
-        .sparse_page_shift = sparse_page_shift,
+        .sparse_page_shift = buffer_cache.GetSparsePageShift(),
         .support_int8 = instance.IsShaderInt8Supported(),
         .support_int16 = instance.IsShaderInt16Supported(),
         .support_int64 = instance.IsShaderInt64Supported(),
@@ -678,6 +681,7 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
     auto& info = program->info;
     info.pgm_base = params.Base(); // Needs to be actualized for inline cbuffer address fixup
     info.user_data = params.user_data;
+    DownloadSrtMemory(info);
     info.RefreshFlatBuf();
     auto spec = Shader::StageSpecialization(info, runtime_info, profile, binding);
 
@@ -703,6 +707,24 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
         fetch_shader = &fetch;
     }
     return std::make_tuple(&program->info, module, perm_hash);
+}
+
+void PipelineCache::DownloadSrtMemory(const Shader::Info& info) {
+    using PointerRead = Shader::PersistentSrtInfo::PointerRead;
+    const auto& reads = info.srt_info.pointer_reads;
+    boost::container::small_vector<VAddr, 16> bases(reads.size());
+    for (size_t i = 0; i < reads.size(); ++i) {
+        const auto& read = reads[i];
+        VAddr base{};
+        if (read.parent == PointerRead::UserData) {
+            std::memcpy(&base, &info.user_data[read.src_off_dw], sizeof(base));
+        } else if (const VAddr src = bases[read.parent] + read.src_off_dw * sizeof(u32);
+                   memory->IsValidGpuMapping(src, sizeof(base))) {
+            memory->CopySparseMemory(src, reinterpret_cast<u8*>(&base), sizeof(base));
+        }
+        bases[i] = base & 0xFFFFFFFFFFFFULL;
+        buffer_cache.DownloadGpuModifiedMemory(bases[i], read.num_dwords * sizeof(u32));
+    }
 }
 
 std::optional<vk::ShaderModule> PipelineCache::ReplaceShader(vk::ShaderModule module,

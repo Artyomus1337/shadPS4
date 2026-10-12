@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <optional>
 #include <unordered_map>
 #include <boost/container/flat_map.hpp>
 #include <queue>
@@ -169,6 +170,8 @@ struct PassInfo {
 
     // Bumped during codegen to assign offsets to readconsts
     u16 dst_off_dw;
+
+    std::vector<PersistentSrtInfo::PointerRead> pointer_reads;
 
     PtrUserList* GetUsesAsPointer(IR::Inst* inst) {
         auto it = pointer_uses.find(inst);
@@ -593,7 +596,7 @@ static inline void PopPtr(Xbyak::CodeGenerator& c) {
 }
 
 static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& pass_info,
-                         Xbyak::CodeGenerator& c) {
+                         Xbyak::CodeGenerator& c, std::optional<u32> parent) {
     if (subtree->GetOpcode() == IR::Opcode::ReadConst && subtree->Flags<u16>() == 0 ||
         subtree->GetOpcode() == IR::Opcode::ReadConstBuffer &&
             subtree->Flags<IR::BufferInstInfo>().flatbuf_off_dw == 0) {
@@ -607,6 +610,12 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
     PassInfo::PtrUserList* use_list = pass_info.GetUsesAsPointer(subtree);
     ASSERT(use_list);
 
+    std::optional<u32> index;
+    if (parent && off_dw.IsImmediate()) {
+        index = static_cast<u32>(pass_info.pointer_reads.size());
+        pass_info.pointer_reads.push_back({*parent, off_dw.U32(), 0});
+    }
+
     // First copy all the src data from this tree level
     // That way, all data that was contiguous in the guest SRT is also contiguous in the
     // flattened buffer.
@@ -615,6 +624,11 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
     for (auto [src_off_dw, use] : *use_list) {
         if (src_off_dw.IsImmediate()) {
             c.mov(r10d, ptr[rdi + (src_off_dw.U32() << 2)]);
+            if (index) {
+                const u32 end_dw = src_off_dw.U32() + (pass_info.GetUsesAsPointer(use) ? 2 : 1);
+                auto& read = pass_info.pointer_reads[*index];
+                read.num_dwords = std::max(read.num_dwords, end_dw);
+            }
         } else {
             if (!ComputeOffset(c, r10d, pass_info, src_off_dw)) {
                 LOG_ERROR(Render_Recompiler, "Failed to compute offset for SRT walker");
@@ -633,7 +647,7 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
     // Then visit any children used as pointers
     for (const auto [src_off_dw, use] : *use_list) {
         if (pass_info.GetUsesAsPointer(use)) {
-            VisitPointer(src_off_dw, use, pass_info, c);
+            VisitPointer(src_off_dw, use, pass_info, c, index);
         }
     }
 
@@ -661,7 +675,8 @@ static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
     ASSERT(pass_info.dst_off_dw == info.srt_info.flattened_bufsize_dw);
 
     for (const auto& [sgpr_base, root] : pass_info.srt_roots) {
-        VisitPointer(IR::Value(static_cast<u32>(sgpr_base)), root, pass_info, c);
+        VisitPointer(IR::Value(static_cast<u32>(sgpr_base)), root, pass_info, c,
+                     PersistentSrtInfo::PointerRead::UserData);
     }
 
     c.ret();
@@ -676,6 +691,7 @@ static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
     }
 
     info.srt_info.flattened_bufsize_dw = pass_info.dst_off_dw;
+    info.srt_info.pointer_reads = std::move(pass_info.pointer_reads);
 }
 
 static bool IsReadConstSource(const IR::Value base) {
