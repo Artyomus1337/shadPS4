@@ -762,7 +762,13 @@ bool PipelineCache::SynchronizeSrtMemory(Shader::Info& info) {
             std::memcpy(&base, &info.user_data[read.src_off_dw], sizeof(base));
         } else if (const VAddr src = bases[read.parent] + read.src_off_dw * sizeof(u32);
                    memory->IsValidGpuMapping(src, sizeof(base))) {
-            downloaded |= buffer_cache.DownloadGpuModifiedMemory(src, sizeof(base));
+            if (buffer_cache.DownloadGpuModifiedMemory(src, sizeof(base))) {
+                downloaded = true;
+                if (trace_srt) {
+                    LOG_INFO(Render_Vulkan, "TRACE srt shader={:#x} pointer={:#x} download",
+                             info.pgm_hash, src);
+                }
+            }
             memory->CopySparseMemory(src, reinterpret_cast<u8*>(&base), sizeof(base));
         }
         bases[i] = base & 0xFFFFFFFFFFFFULL;
@@ -778,6 +784,17 @@ bool PipelineCache::SynchronizeSrtMemory(Shader::Info& info) {
             const u32 dst_off_dw = copy.dst_off_dw + first;
             const u64 size = num_dwords * sizeof(u32);
             first += num_dwords;
+            if (trace_srt && memory->IsValidGpuMapping(address, size) &&
+                buffer_cache.IsRegionGpuWritten(address, size)) {
+                const bool patch = can_patch &&
+                                   buffer_cache.IsRegionRecentlyGpuWritten(address, size) &&
+                                   !IsFlatbufReadByCpu(info, dst_off_dw, dst_off_dw + num_dwords);
+                LOG_INFO(Render_Vulkan, "TRACE srt shader={:#x} addr={:#x} size={} slot={} {}",
+                         info.pgm_hash, address, size, dst_off_dw,
+                         buffer_cache.IsRegionCpuModified(address, size)
+                             ? "skip-cpu"
+                             : (patch ? "patch" : "download"));
+            }
             if (!memory->IsValidGpuMapping(address, size) ||
                 !buffer_cache.IsRegionGpuWritten(address, size) ||
                 buffer_cache.IsRegionCpuModified(address, size)) {
