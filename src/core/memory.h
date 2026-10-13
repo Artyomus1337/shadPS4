@@ -5,6 +5,7 @@
 
 #include <map>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <string_view>
 #include "common/enum.h"
@@ -254,7 +255,11 @@ public:
 
     void CopySparseMemory(VAddr source, u8* dest, u64 size);
 
-    bool TryWriteBacking(void* address, const void* data, u64 size);
+    bool TryWriteBacking(void* address, const void* data, u64 size, bool assume_locked = false);
+
+    [[nodiscard]] std::shared_lock<Common::SharedFirstMutex> LockShared() {
+        return std::shared_lock{mutex};
+    }
 
     void SetupMemoryRegions(u64 flexible_size, bool use_extended_mem1, bool use_extended_mem2);
 

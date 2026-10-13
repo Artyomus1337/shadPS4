@@ -187,13 +187,20 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
     scheduler.Finish();
 
     download.buffer->Invalidate(download.offset, download.size);
-    for (const auto& copy : copies) {
-        const VAddr copy_addr = arena_base + copy.srcOffset;
-        const u8* data = download.mapped + (copy.dstOffset - download.offset);
-        // Without readbacks the CPU may have written since, and its data is newer.
-        memory_tracker->ForEachCpuUnmodifiedRange(copy_addr, copy.size, [&](VAddr addr, u64 size) {
-            memory->TryWriteBacking(std::bit_cast<u8*>(addr), data + (addr - copy_addr), size);
-        });
+    {
+        // Lock the memory map before the regions, a guest write that faults while the memory
+        // map is locked exclusively needs the region lock.
+        const auto memory_lock = memory->LockShared();
+        for (const auto& copy : copies) {
+            const VAddr copy_addr = arena_base + copy.srcOffset;
+            const u8* data = download.mapped + (copy.dstOffset - download.offset);
+            // Without readbacks the CPU may have written since, and its data is newer.
+            memory_tracker->ForEachCpuUnmodifiedRange(
+                copy_addr, copy.size, [&](VAddr addr, u64 size) {
+                    memory->TryWriteBacking(std::bit_cast<u8*>(addr), data + (addr - copy_addr),
+                                            size, true);
+                });
+        }
     }
     memory_tracker->UnmarkRegionAsGpuModified(device_addr, size, false);
 }

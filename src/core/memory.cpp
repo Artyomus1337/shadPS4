@@ -161,9 +161,12 @@ void MemoryManager::CopySparseMemory(VAddr virtual_addr, u8* dest, u64 size) {
     }
 }
 
-bool MemoryManager::TryWriteBacking(void* address, const void* data, u64 size) {
+bool MemoryManager::TryWriteBacking(void* address, const void* data, u64 size, bool assume_locked) {
     const VAddr virtual_addr = std::bit_cast<VAddr>(address);
-    std::shared_lock lk{mutex};
+    std::shared_lock lk{mutex, std::defer_lock};
+    if (!assume_locked) {
+        lk.lock();
+    }
     ASSERT_MSG(IsValidMapping(virtual_addr, size), "Attempted to access invalid address {:#x}",
                virtual_addr);
 
