@@ -99,6 +99,8 @@ void BufferCache::TickFrame() {
     if (std::exchange(fault_process_pending, false)) {
         fault_manager->ProcessFaultBuffer();
     }
+    recent_gpu_writes_index ^= 1;
+    recent_gpu_writes[recent_gpu_writes_index].Clear();
 }
 
 void BufferCache::InvalidateMemory(VAddr device_addr, u64 size, bool assume_locks) {
@@ -134,8 +136,17 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
 }
 
 bool BufferCache::DownloadGpuModifiedMemory(VAddr device_addr, u64 size) {
-    if (!memory->IsValidGpuMapping(device_addr, size) || !IsRegionGpuModified(device_addr, size) ||
-        IsRegionCpuModified(device_addr, size)) {
+    if (!memory->IsValidGpuMapping(device_addr, size)) {
+        return false;
+    }
+    bool needs_download = false;
+    for (VAddr addr = device_addr, end = device_addr + size; addr < end && !needs_download;) {
+        const VAddr next = std::min(Common::AlignDown(addr, BYTES_PER_PAGE) + BYTES_PER_PAGE, end);
+        needs_download =
+            IsRegionGpuWritten(addr, next - addr) && !IsRegionCpuModified(addr, next - addr);
+        addr = next;
+    }
+    if (!needs_download) {
         return false;
     }
     const u64 first_block = device_addr >> block_shift;
@@ -177,9 +188,12 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
 
     download.buffer->Invalidate(download.offset, download.size);
     for (const auto& copy : copies) {
-        auto* dst_addr = std::bit_cast<u8*>(arena_base + copy.srcOffset);
-        memory->TryWriteBacking(dst_addr, download.mapped + (copy.dstOffset - download.offset),
-                                copy.size);
+        const VAddr copy_addr = arena_base + copy.srcOffset;
+        const u8* data = download.mapped + (copy.dstOffset - download.offset);
+        // Without readbacks the CPU may have written since, and its data is newer.
+        memory_tracker->ForEachCpuUnmodifiedRange(copy_addr, copy.size, [&](VAddr addr, u64 size) {
+            memory->TryWriteBacking(std::bit_cast<u8*>(addr), data + (addr - copy_addr), size);
+        });
     }
     memory_tracker->UnmarkRegionAsGpuModified(device_addr, size, false);
 }
@@ -200,6 +214,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     SynchronizeMemory(arena, device_addr, size, is_written, is_texel_buffer);
     if (is_written) {
         gpu_modified_ranges.Add(device_addr, size);
+        recent_gpu_writes[recent_gpu_writes_index].Add(device_addr, size);
     }
     return {arena, arena->Offset(device_addr)};
 }
@@ -221,6 +236,15 @@ bool BufferCache::IsRegionCpuModified(VAddr addr, size_t size) {
 
 bool BufferCache::IsRegionGpuModified(VAddr addr, size_t size) {
     return memory_tracker->IsRegionGpuModified(addr, size);
+}
+
+bool BufferCache::IsRegionGpuWritten(VAddr addr, size_t size) {
+    return IsRegionGpuModified(addr, size) && gpu_modified_ranges.Intersects(addr, size);
+}
+
+bool BufferCache::IsRegionRecentlyGpuWritten(VAddr addr, size_t size) {
+    return recent_gpu_writes[0].Intersects(addr, size) ||
+           recent_gpu_writes[1].Intersects(addr, size);
 }
 
 void BufferCache::SynchronizeDmaBuffers() {

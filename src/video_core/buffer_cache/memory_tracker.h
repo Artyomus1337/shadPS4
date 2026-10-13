@@ -102,6 +102,24 @@ public:
         });
     }
 
+    /// Call 'func' for each page range not modified from the CPU, holding the region lock so
+    /// that a concurrent CPU write cannot land in between
+    void ForEachCpuUnmodifiedRange(VAddr cpu_addr, u64 size, auto&& func) {
+        IteratePages(cpu_addr, size, [&func](RegionManager* manager, u64 offset, u64 size) {
+            const auto bounds = manager->GetBounds(offset, size);
+            manager->Lock(bounds);
+            for (u64 done = 0; done < size;) {
+                const u64 piece =
+                    std::min(size - done, BYTES_PER_PAGE - (offset + done) % BYTES_PER_PAGE);
+                if (!manager->template IsRegionModified<Type::CPU>(offset + done, piece)) {
+                    func(manager->GetCpuAddress() + offset + done, piece);
+                }
+                done += piece;
+            }
+            manager->Unlock(bounds);
+        });
+    }
+
 private:
     template <bool create_region_on_fail = false, typename Func>
     bool IteratePages(VAddr cpu_address, u64 size, Func&& func) {

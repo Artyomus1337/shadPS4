@@ -102,6 +102,12 @@ public:
     /// Return true when a region is modified from the GPU
     [[nodiscard]] bool IsRegionGpuModified(VAddr addr, size_t size);
 
+    /// Return true when GPU written data in the region has not been downloaded
+    [[nodiscard]] bool IsRegionGpuWritten(VAddr addr, size_t size);
+
+    /// Return true when the GPU wrote to the region since the previous submit
+    [[nodiscard]] bool IsRegionRecentlyGpuWritten(VAddr addr, size_t size);
+
     /// Synchronizes all buffers needed for DMA.
     void SynchronizeDmaBuffers();
 
@@ -146,6 +152,8 @@ private:
     Buffer gds_buffer;
     std::unique_ptr<Buffer> null_index_buffer;
     RangeSet gpu_modified_ranges;
+    std::array<RangeSet, 2> recent_gpu_writes;
+    u32 recent_gpu_writes_index{};
 
     std::unique_ptr<FaultManager> fault_manager;
     std::unique_ptr<Buffer> bda_pagetable_buffer;

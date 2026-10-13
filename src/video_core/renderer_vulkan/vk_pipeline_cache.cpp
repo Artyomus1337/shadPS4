@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <ranges>
 
+#include "common/div_ceil.h"
 #include "common/hash.h"
 #include "common/io_file.h"
 #include "common/path_util.h"
@@ -16,6 +17,7 @@
 #include "shader_recompiler/runtime_info.h"
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/buffer_cache/buffer_cache.h"
+#include "video_core/buffer_cache/region_definitions.h"
 #include "video_core/cache_storage.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -667,13 +669,6 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
         auto& program = it_pgm.value();
         auto start = binding;
         const auto module = CompileModule(program->info, runtime_info, params.code, 0, binding);
-        if (SynchronizeSrtMemory(program->info)) {
-            // Compiled from stale guest memory, start over with the downloaded data.
-            instance.GetDevice().destroyShaderModule(module);
-            program_cache.erase(params.hash);
-            binding = start;
-            return GetProgram(hw_stage, sw_stage, params, binding);
-        }
         auto spec = Shader::StageSpecialization(program->info, runtime_info, profile, start);
         const auto perm_hash = HashCombine(params.hash, 0);
 
@@ -681,6 +676,11 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
         program->AddPermut(module, std::move(spec));
         if (auto& fetch = program->modules[0].spec.fetch_shader_data; !fetch.Empty()) {
             fetch_shader = &fetch;
+        }
+        if (SynchronizeSrtMemory(program->info)) {
+            // The walker ran on stale guest memory, select the permutation again.
+            binding = start;
+            return GetProgram(hw_stage, sw_stage, params, binding);
         }
         return std::make_tuple(&program->info, module, perm_hash);
     }
@@ -768,18 +768,28 @@ bool PipelineCache::SynchronizeSrtMemory(Shader::Info& info) {
         bases[i] = base & 0xFFFFFFFFFFFFULL;
     }
     for (const auto& copy : srt.flat_copies) {
-        const VAddr address = bases[copy.read] + copy.src_off_dw * sizeof(u32);
-        const u64 size = copy.num_dwords * sizeof(u32);
-        if (!memory->IsValidGpuMapping(address, size) ||
-            !buffer_cache.IsRegionGpuModified(address, size) ||
-            buffer_cache.IsRegionCpuModified(address, size)) {
-            continue;
-        }
-        if (!can_patch ||
-            IsFlatbufReadByCpu(info, copy.dst_off_dw, copy.dst_off_dw + copy.num_dwords)) {
-            downloaded |= buffer_cache.DownloadGpuModifiedMemory(address, size);
-        } else {
-            info.flatbuf_patches.push_back({address, copy.dst_off_dw, copy.num_dwords});
+        const VAddr run_address = bases[copy.read] + copy.src_off_dw * sizeof(u32);
+        // Memory is tracked per page, so decide for each page of the run separately.
+        for (u32 first = 0; first < copy.num_dwords;) {
+            const VAddr address = run_address + first * sizeof(u32);
+            const u64 page_left = VideoCore::BYTES_PER_PAGE - address % VideoCore::BYTES_PER_PAGE;
+            const u32 num_dwords =
+                std::min<u32>(copy.num_dwords - first, Common::DivCeil(page_left, sizeof(u32)));
+            const u32 dst_off_dw = copy.dst_off_dw + first;
+            const u64 size = num_dwords * sizeof(u32);
+            first += num_dwords;
+            if (!memory->IsValidGpuMapping(address, size) ||
+                !buffer_cache.IsRegionGpuWritten(address, size) ||
+                buffer_cache.IsRegionCpuModified(address, size)) {
+                continue;
+            }
+            // Data written long ago is downloaded once instead of being patched on every use.
+            if (!can_patch || !buffer_cache.IsRegionRecentlyGpuWritten(address, size) ||
+                IsFlatbufReadByCpu(info, dst_off_dw, dst_off_dw + num_dwords)) {
+                downloaded |= buffer_cache.DownloadGpuModifiedMemory(address, size);
+            } else {
+                info.flatbuf_patches.push_back({address, dst_off_dw, num_dwords});
+            }
         }
     }
     return downloaded;

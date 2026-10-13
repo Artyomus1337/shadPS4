@@ -962,12 +962,19 @@ void Rasterizer::PatchFlatbuf(const Shader::Info& stage, u64 flatbuf_offset) {
     for (const auto& patch : stage.flatbuf_patches) {
         const u32 size = patch.num_dwords * sizeof(u32);
         const auto [buffer, offset] = buffer_cache.ObtainBuffer(patch.address, size, false);
+        if (runtime.IsBufferAccessed(buffer, offset, size)) {
+            runtime.FlushBarriers();
+        }
         const vk::BufferCopy copy = {
             .srcOffset = offset,
             .dstOffset = flatbuf_offset + patch.dst_off_dw * sizeof(u32),
             .size = size,
         };
-        runtime.CopyBuffer(buffer, &vk_buffer, std::span{&copy, 1});
+        // The barrier below covers the destination, so only track the source read.
+        scheduler.EndRendering();
+        scheduler.CommandBuffer().copyBuffer(buffer->Handle(), vk_buffer.Handle(), copy);
+        runtime.AccessBuffer(buffer, offset, size, vk::PipelineStageFlagBits2::eCopy,
+                             vk::AccessFlagBits2::eTransferRead);
     }
     const vk::BufferMemoryBarrier2 barrier = {
         .srcStageMask = vk::PipelineStageFlagBits2::eCopy,
