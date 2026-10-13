@@ -762,13 +762,7 @@ bool PipelineCache::SynchronizeSrtMemory(Shader::Info& info) {
             std::memcpy(&base, &info.user_data[read.src_off_dw], sizeof(base));
         } else if (const VAddr src = bases[read.parent] + read.src_off_dw * sizeof(u32);
                    memory->IsValidGpuMapping(src, sizeof(base))) {
-            if (buffer_cache.DownloadGpuModifiedMemory(src, sizeof(base))) {
-                downloaded = true;
-                if (trace_srt) {
-                    LOG_INFO(Render_Vulkan, "TRACE srt shader={:#x} pointer={:#x} download",
-                             info.pgm_hash, src);
-                }
-            }
+            downloaded |= buffer_cache.DownloadGpuModifiedMemory(src, sizeof(base));
             memory->CopySparseMemory(src, reinterpret_cast<u8*>(&base), sizeof(base));
         }
         bases[i] = base & 0xFFFFFFFFFFFFULL;
@@ -776,16 +770,6 @@ bool PipelineCache::SynchronizeSrtMemory(Shader::Info& info) {
     for (const auto& copy : srt.flat_copies) {
         const VAddr address = bases[copy.read] + copy.src_off_dw * sizeof(u32);
         const u64 size = copy.num_dwords * sizeof(u32);
-        if (trace_srt && memory->IsValidGpuMapping(address, size) &&
-            buffer_cache.IsRegionGpuModified(address, size)) {
-            const bool cpu_modified = buffer_cache.IsRegionCpuModified(address, size);
-            const bool read_by_cpu =
-                IsFlatbufReadByCpu(info, copy.dst_off_dw, copy.dst_off_dw + copy.num_dwords);
-            LOG_INFO(Render_Vulkan, "TRACE srt shader={:#x} addr={:#x} size={} slot={} {}",
-                     info.pgm_hash, address, size, copy.dst_off_dw,
-                     cpu_modified ? "skip-cpu"
-                                  : (read_by_cpu || !can_patch ? "download" : "patch"));
-        }
         if (!memory->IsValidGpuMapping(address, size) ||
             !buffer_cache.IsRegionGpuModified(address, size) ||
             buffer_cache.IsRegionCpuModified(address, size)) {
