@@ -667,6 +667,13 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
         auto& program = it_pgm.value();
         auto start = binding;
         const auto module = CompileModule(program->info, runtime_info, params.code, 0, binding);
+        if (SynchronizeSrtMemory(program->info)) {
+            // Compiled from stale guest memory, start over with the downloaded data.
+            instance.GetDevice().destroyShaderModule(module);
+            program_cache.erase(params.hash);
+            binding = start;
+            return GetProgram(hw_stage, sw_stage, params, binding);
+        }
         auto spec = Shader::StageSpecialization(program->info, runtime_info, profile, start);
         const auto perm_hash = HashCombine(params.hash, 0);
 
@@ -740,9 +747,12 @@ static bool IsFlatbufReadByCpu(const Shader::Info& info, u32 begin, u32 end) {
            });
 }
 
-void PipelineCache::SynchronizeSrtMemory(Shader::Info& info) {
+bool PipelineCache::SynchronizeSrtMemory(Shader::Info& info) {
     using PointerRead = Shader::PersistentSrtInfo::PointerRead;
     const auto& srt = info.srt_info;
+    // In precise mode the walker read faults and downloads the memory anyway.
+    const bool can_patch = EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Precise;
+    bool downloaded = false;
     info.flatbuf_patches.clear();
     boost::container::small_vector<VAddr, 16> bases(srt.pointer_reads.size());
     for (size_t i = 0; i < srt.pointer_reads.size(); ++i) {
@@ -752,7 +762,7 @@ void PipelineCache::SynchronizeSrtMemory(Shader::Info& info) {
             std::memcpy(&base, &info.user_data[read.src_off_dw], sizeof(base));
         } else if (const VAddr src = bases[read.parent] + read.src_off_dw * sizeof(u32);
                    memory->IsValidGpuMapping(src, sizeof(base))) {
-            buffer_cache.DownloadGpuModifiedMemory(src, sizeof(base));
+            downloaded |= buffer_cache.DownloadGpuModifiedMemory(src, sizeof(base));
             memory->CopySparseMemory(src, reinterpret_cast<u8*>(&base), sizeof(base));
         }
         bases[i] = base & 0xFFFFFFFFFFFFULL;
@@ -765,12 +775,14 @@ void PipelineCache::SynchronizeSrtMemory(Shader::Info& info) {
             buffer_cache.IsRegionCpuModified(address, size)) {
             continue;
         }
-        if (IsFlatbufReadByCpu(info, copy.dst_off_dw, copy.dst_off_dw + copy.num_dwords)) {
-            buffer_cache.DownloadGpuModifiedMemory(address, size);
+        if (!can_patch ||
+            IsFlatbufReadByCpu(info, copy.dst_off_dw, copy.dst_off_dw + copy.num_dwords)) {
+            downloaded |= buffer_cache.DownloadGpuModifiedMemory(address, size);
         } else {
             info.flatbuf_patches.push_back({address, copy.dst_off_dw, copy.num_dwords});
         }
     }
+    return downloaded;
 }
 
 std::optional<vk::ShaderModule> PipelineCache::ReplaceShader(vk::ShaderModule module,

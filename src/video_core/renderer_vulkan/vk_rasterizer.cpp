@@ -955,6 +955,9 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
 }
 
 void Rasterizer::PatchFlatbuf(const Shader::Info& stage, u64 flatbuf_offset) {
+    if (stage.flatbuf_patches.empty()) {
+        return;
+    }
     auto& vk_buffer = buffer_cache.GetStreamBuffer();
     for (const auto& patch : stage.flatbuf_patches) {
         const u32 size = patch.num_dwords * sizeof(u32);
@@ -965,8 +968,20 @@ void Rasterizer::PatchFlatbuf(const Shader::Info& stage, u64 flatbuf_offset) {
             .size = size,
         };
         runtime.CopyBuffer(buffer, &vk_buffer, std::span{&copy, 1});
-        needs_barrier = true;
     }
+    const vk::BufferMemoryBarrier2 barrier = {
+        .srcStageMask = vk::PipelineStageFlagBits2::eCopy,
+        .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eUniformRead,
+        .buffer = vk_buffer.Handle(),
+        .offset = flatbuf_offset,
+        .size = stage.flattened_ud_buf.size() * sizeof(u32),
+    };
+    scheduler.CommandBuffer().pipelineBarrier2(vk::DependencyInfo{
+        .bufferMemoryBarrierCount = 1,
+        .pBufferMemoryBarriers = &barrier,
+    });
 }
 
 void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindings& binding) {
